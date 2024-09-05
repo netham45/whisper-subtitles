@@ -2,3 +2,4 @@ This proof of concept runs Whisper and streams the last 10 seconds of an MP3 str
 
 Requires Whisper, requires ffmpeg, requires fastapi, requires uvicorn
 
+[Example Video](https://www.youtube.com/watch?v=)
