@@ -73,7 +73,6 @@ class Subtitles(threading.Thread):
         if self.__model is None:
             raise RuntimeError("Model not loaded")
         if file_name in self.__file_list:
-            print("dupe filename")
             return
         self.__file_list.append(file_name)
 
@@ -86,9 +85,9 @@ class Subtitles(threading.Thread):
         if len(self.__file_list) >= self.__num_chunks:
             audio = self.__load_combined_audio()
             result = whisper.transcribe(self.__model, audio)
-            print(f"{CLEAR}{result['text']}")
+            print(f"{CLEAR}{result['text']}", end="", flush=True)
         else:
-            print(f"{CLEAR}Receiving Initial Audio")
+            print(f"{CLEAR}Receiving Initial Audio", end="", flush=True)
 
     def run(self) -> None:
         """Starts ffmpeg and listens for new files from it"""
