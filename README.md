@@ -1,13 +1,37 @@
-This script runs Whisper and streams the last 10 seconds of an MP3 stream to it every second and provides the output using ffmpeg, it can play any stream ffmpeg can play.
+# Whisper Subtitles
 
-Requires Whisper, ffmpeg, numpy
+This script uses Whisper to transcribe an audio stream in real-time, providing subtitles for any stream that ffmpeg can play.
 
-Usage:
+## Requirements
 
-`python subtitles.py <url>`
+- Whisper
+- ffmpeg
+- numpy
 
-Example:
+## Usage
 
-`python subtitles.py https://screamrouter.netham45.org/stream/192.168.3.152/`
+```
+python subtitles.py [-h] [-m MODEL] [-d DEVICE] [-l CHUNK_LENGTH] [-n NUM_CHUNKS] source
+```
 
-[Example Video](https://www.youtube.com/watch?v=U7oqxJe8Nz8)
+### Arguments:
+
+- `source`: File or URL for ffmpeg to play (required)
+- `-m, --model`: Whisper model to use (default: "base.en")
+- `-d, --device`: 'cuda' for GPU or 'cpu' for CPU (default: "cuda")
+- `-l, --chunk_length`: Length of chunks in seconds (default: 3)
+- `-n, --num_chunks`: Number of chunks to process (default: 2)
+
+### Example:
+
+```
+python subtitles.py https://example.com/audio_stream.mp3 -m medium -d cpu -l 5 -n 3
+```
+
+This example uses the 'medium' model on CPU, processing 5-second chunks and processes the last 3 chunks.
+
+For more information on available options, use:
+
+```
+python subtitles.py -h
+```
