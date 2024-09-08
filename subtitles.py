@@ -55,6 +55,7 @@ class SubtitleStreamProperties(BaseModel):
     whisper_model: WhisperModelAnnotation
     chunk_length: ChunkLengthAnnotation
     num_chunks: NumChunksAnnotation
+    source: URLFileAnnotation
 
 class Subtitles(threading.Thread):
     """Reads an ffmpeg stream and does subtitles for it"""
@@ -62,14 +63,11 @@ class Subtitles(threading.Thread):
     __running: bool = True
     __file_list: List[str] = []
     __stream_properties: SubtitleStreamProperties
-    __url: URLFileAnnotation
     __temp_dir: str
 
     def __init__(self,
-                 url: URLFileAnnotation,
                  stream_properties: SubtitleStreamProperties) -> None:
         super().__init__()
-        self.__url = url
         self.__stream_properties = stream_properties
         self.__temp_dir = tempfile.mkdtemp(prefix="subtitles_")
         self.__chunk_length = int(self.__stream_properties.chunk_length)
@@ -124,7 +122,7 @@ class Subtitles(threading.Thread):
     def run(self) -> None:
         """Starts ffmpeg and listens for new files from it"""
         cmd: List[str] = ["ffmpeg",
-                          "-i", str(self.__url),
+                          "-i", str(self.__stream_properties.source),
                           "-f", "segment",
                           "-segment_time", str(self.__stream_properties.chunk_length),
                           "-strftime", "1",
@@ -204,16 +202,19 @@ def main() -> None:
             device_type=args.device,
             whisper_model=args.model,
             chunk_length=args.chunk_length,
-            num_chunks=args.num_chunks
+            num_chunks=args.num_chunks,
+            source=args.source
         )
-        subtitles: Subtitles = Subtitles(args.source, stream_properties)
+        subtitles: Subtitles = Subtitles(stream_properties)
         try:
             subtitles.start()
             subtitles.join()
         except KeyboardInterrupt:
-            subtitles.stop()
+            pass
         except RuntimeError:
-            subtitles.stop()
+            pass
+        subtitles.stop()
+        subtitles.join()
     except ValidationError as e:
         parser.error(str(e))
 
