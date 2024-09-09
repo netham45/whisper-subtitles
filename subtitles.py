@@ -111,7 +111,14 @@ class Subtitles(threading.Thread):
                                           np.iinfo(FFMPEG_DATA_TYPE).max)
             result = whisper.transcribe(self.__model, combined_audio)
             del self.__chunks[0]
-            self.__write_line(str(result['text']))
+            silent: bool = True
+            for segment in result['segments']:
+                if segment['no_speech_prob'] < .4: # type: ignore
+                    silent = False
+            if silent:
+                self.__write_line("No speech")
+            else:
+                self.__write_line(str(result['text']))
         else:
             self.__write_line("Receiving Initial Audio")
 
