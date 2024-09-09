@@ -30,8 +30,10 @@ class WhisperModel(str, Enum):
     SMALL_EN = 'small.en'
     MEDIUM_EN = 'medium.en'
 
-WhisperDeviceAnnotation = Annotated[WhisperDevice, "Compute device type."]
-WhisperModelAnnotation = Annotated[WhisperModel, "Whisper model to run."]
+WhisperDeviceAnnotation = Annotated[WhisperDevice,
+            "Compute device type."]
+WhisperModelAnnotation = Annotated[WhisperModel,
+            "Whisper model to run."]
 ChunkLengthAnnotation = Annotated[int,
             "Chunk length in seconds for audio to be segmented into.",
             Field(strict=True, ge=0, le=10)]
@@ -41,7 +43,7 @@ NumChunksAnnotation = Annotated[int,
 URLFileAnnotation = Annotated[Union[AnyUrl, FilePath] ,
             "URL or File to be streamed."]
 RealtimeAnnotation = Annotated[bool,
-            "Rather ffmpeg should play in real-time or as fast as it can. Do not use for streams."]
+            "Process in real-time or as fast as possible. Use for files, not realtime streams."]
 DontclearAnnotation = Annotated[bool,
             "Clear the screen between transcribed lines."]
 
