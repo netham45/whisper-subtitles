@@ -38,7 +38,12 @@ ChunkLengthAnnotation = Annotated[int,
 NumChunksAnnotation = Annotated[int,
             "Number of chunk segments to be transcribed at once.",
             Field(strict=True, ge=0, le=10)]
-URLFileAnnotation = Annotated[Union[AnyUrl, FilePath] , "URL or File to be streamed."]
+URLFileAnnotation = Annotated[Union[AnyUrl, FilePath] ,
+            "URL or File to be streamed."]
+RealtimeAnnotation = Annotated[bool,
+            "Rather ffmpeg should play in real-time or as fast as it can. Do not use for streams."]
+DontclearAnnotation = Annotated[bool,
+            "Clear the screen between transcribed lines."]
 
 DEFAULT_MODEL: WhisperModel = WhisperModel.BASE_EN
 DEFAULT_DEVICE: WhisperDevice = WhisperDevice.CUDA
@@ -60,6 +65,8 @@ class SubtitleStreamProperties(BaseModel):
     chunk_duration: ChunkLengthAnnotation
     num_chunks: NumChunksAnnotation
     source: URLFileAnnotation
+    ffmpeg_realtime: RealtimeAnnotation
+    dont_clear: DontclearAnnotation
 
 class Subtitles(threading.Thread):
     """Reads an ffmpeg stream and does subtitles for it"""
@@ -89,6 +96,13 @@ class Subtitles(threading.Thread):
                                           self.__stream_properties.device_type)
         print("Loaded Model")
 
+    def __write_line(self, line: str):
+        """Write a line, clear the screen if configured"""
+        if not self.__stream_properties.dont_clear:
+            print(f"{CLEAR}{line}", end="", flush=True)
+        else:
+            print(line, flush=True)
+
     def __process_chunk(self, data: np.ndarray) -> None:
         """Processes a chunk of audio"""
         self.__chunks.append(data)
@@ -97,20 +111,23 @@ class Subtitles(threading.Thread):
                                           np.iinfo(FFMPEG_DATA_TYPE).max)
             result = whisper.transcribe(self.__model, combined_audio)
             del self.__chunks[0]
-            print(f"{CLEAR}{result['text']}", end="", flush=True)
+            self.__write_line(str(result['text']))
         else:
-            print(f"{CLEAR}Receiving Initial Audio", end="", flush=True)
+            self.__write_line("Receiving Initial Audio")
 
     def run(self) -> None:
         """Starts ffmpeg and listens for new files from it"""
         cmd: List[str] = ["ffmpeg",
                           "-hide_banner",
-                          "-loglevel", FFMPEG_LOG_LEVEL,
-                          "-i", str(self.__stream_properties.source),
+                          "-loglevel", FFMPEG_LOG_LEVEL]
+        if self.__stream_properties.ffmpeg_realtime:
+            cmd.append("-re")
+        cmd.extend([      "-i", str(self.__stream_properties.source),
                           "-f", FFMPEG_DATA_STRING,
                           "-ar", str(WHISPER_SAMPLE_RATE),
                           "-ac", str(FFMPEG_CHANNELS),
-                          FFMPEG_OUTPUT]
+                          FFMPEG_OUTPUT])
+        
         with Popen(cmd, stdout=PIPE, bufsize=self.__chunk_bytes) as self.__process:
             if self.__process.stdout is None:
                 raise RuntimeError("stdout is none")
@@ -160,6 +177,14 @@ def main() -> None:
                     type=int,
                     default=DEFAULT_NUM_CHUNKS,
                     help=NumChunksAnnotation.__metadata__[0]) # pylint: disable=no-member # type: ignore
+    parser.add_argument(
+                    '-r', '--realtime',
+                    help=RealtimeAnnotation.__metadata__[0], # pylint: disable=no-member # type: ignore
+                    action='store_true')
+    parser.add_argument(
+                    '-c', '--dontclear',
+                    help=DontclearAnnotation.__metadata__[0], # pylint: disable=no-member # type: ignore
+                    action='store_true')
 
     args = parser.parse_args()
 
@@ -169,7 +194,9 @@ def main() -> None:
             whisper_model=args.model,
             chunk_duration=args.chunk_length,
             num_chunks=args.num_chunks,
-            source=args.source
+            source=args.source,
+            ffmpeg_realtime=args.realtime,
+            dont_clear=args.dontclear
         )
         subtitles: Subtitles = Subtitles(stream_properties)
         try:
