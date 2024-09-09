@@ -134,7 +134,7 @@ class Subtitles(threading.Thread):
                           "-ar", str(WHISPER_SAMPLE_RATE),
                           "-ac", str(FFMPEG_CHANNELS),
                           FFMPEG_OUTPUT])
-        
+
         with Popen(cmd, stdout=PIPE, bufsize=self.__chunk_bytes) as self.__process:
             if self.__process.stdout is None:
                 raise RuntimeError("stdout is none")
