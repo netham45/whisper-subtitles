@@ -4,7 +4,8 @@ import argparse
 import threading
 from subprocess import Popen, PIPE
 from enum import Enum
-from typing import Annotated, List, Union
+from typing import Annotated, List, Optional, Union
+import concurrent.futures
 
 import numpy as np
 import whisper
@@ -36,29 +37,19 @@ WhisperModelAnnotation = Annotated[WhisperModel,
             "Whisper model to run."]
 ChunkLengthAnnotation = Annotated[int,
             "Chunk length in seconds for audio to be segmented into.",
-            Field(strict=True, ge=0, le=10)]
+            Field(strict=True, ge=0, le=100)]
 NumChunksAnnotation = Annotated[int,
             "Number of chunk segments to be transcribed at once.",
-            Field(strict=True, ge=0, le=10)]
-URLFileAnnotation = Annotated[Union[AnyUrl, FilePath] ,
+            Field(strict=True, ge=0, le=100)]
+NumLinesAnnotation = Annotated[int,
+            "Number of lines to output per subtitle refresh",
+            Field(strict=True, ge=0, le=100)]
+URLFileAnnotation = Annotated[Union[AnyUrl, FilePath],
             "URL or File to be streamed."]
 RealtimeAnnotation = Annotated[bool,
             "Process in real-time or as fast as possible. Use for files, not realtime streams."]
 DontclearAnnotation = Annotated[bool,
             "Clear the screen between transcribed lines."]
-
-DEFAULT_MODEL: WhisperModel = WhisperModel.BASE_EN
-DEFAULT_DEVICE: WhisperDevice = WhisperDevice.CUDA
-DEFAULT_NUM_CHUNKS: int = 2
-DEFAULT_CHUNK_LENGTH: int = 3
-
-CLEAR: str = "\033[2J\033[H"  # ANSI clear code
-WHISPER_SAMPLE_RATE: int = 16000
-FFMPEG_DATA_TYPE: type = np.int16
-FFMPEG_DATA_STRING: str = "s16le"
-FFMPEG_CHANNELS: int = 1
-FFMPEG_LOG_LEVEL: str = "fatal"
-FFMPEG_OUTPUT: str = "pipe:"
 
 class SubtitleStreamProperties(BaseModel):
     """Subtitle Stream Properties"""
@@ -69,6 +60,22 @@ class SubtitleStreamProperties(BaseModel):
     source: URLFileAnnotation
     ffmpeg_realtime: RealtimeAnnotation
     dont_clear: DontclearAnnotation
+    num_lines: NumLinesAnnotation
+
+DEFAULT_MODEL: WhisperModel = WhisperModel.BASE_EN
+DEFAULT_DEVICE: WhisperDevice = WhisperDevice.CUDA
+DEFAULT_NUM_CHUNKS: int = 2
+DEFAULT_NUM_LINES: int = 5
+DEFAULT_CHUNK_LENGTH: int = 3
+
+CLEAR: str = "\033[2J\033[H"  # ANSI clear code
+WHISPER_SAMPLE_RATE: int = 16000
+FFMPEG_DATA_TYPE: type = np.int16
+FFMPEG_DATA_STRING: str = "s16le"
+FFMPEG_CHANNELS: int = 1
+FFMPEG_LOG_LEVEL: str = "fatal"
+FFMPEG_OUTPUT: str = "pipe:"
+MIN_PROBABLY_SPEECH: float = .7
 
 class Subtitles(threading.Thread):
     """Reads an ffmpeg stream and does subtitles for it"""
@@ -98,31 +105,49 @@ class Subtitles(threading.Thread):
                                           self.__stream_properties.device_type)
         print("Loaded Model")
 
-    def __write_line(self, line: str):
+    def __write_line(self, line: str, is_start: bool):
         """Write a line, clear the screen if configured"""
-        if not self.__stream_properties.dont_clear:
+        if is_start and not self.__stream_properties.dont_clear:
             print(f"{CLEAR}{line}", end="", flush=True)
         else:
             print(line, flush=True)
 
+    def transcribe_with_timeout(self, audio: np.ndarray) -> Optional[dict]:
+        """Transcribe with a timeout"""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future: concurrent.futures.Future = executor.submit(
+                whisper.transcribe,
+                self.__model,
+                audio)
+            try:
+                result: dict = future.result(
+                    timeout=self.__stream_properties.chunk_duration - 1) # type: ignore
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                print("\nTranscription timed out")
+                return None
+        return result
+
     def __process_chunk(self, data: np.ndarray) -> None:
         """Processes a chunk of audio"""
         self.__chunks.append(data)
-        if len(self.__chunks) >= self.__stream_properties.num_chunks:
+        if len(self.__chunks) >= 3:
             combined_audio: np.ndarray = (np.concatenate(self.__chunks).astype(np.float32) /
                                           np.iinfo(FFMPEG_DATA_TYPE).max)
-            result = whisper.transcribe(self.__model, combined_audio)
-            del self.__chunks[0]
-            silent: bool = True
-            for segment in result['segments']:
-                if segment['no_speech_prob'] < .4: # type: ignore
-                    silent = False
-            if silent:
-                self.__write_line("No speech")
-            else:
-                self.__write_line(str(result['text']))
+            result = self.transcribe_with_timeout(combined_audio)
+            if len(self.__chunks) >= self.__stream_properties.num_chunks:
+                del self.__chunks[0]
+            if result is None:
+                return
+            first_segment: bool = True
+            for segment in result['segments'][-(self.__stream_properties.num_lines - 1):]:
+                if segment['no_speech_prob'] < MIN_PROBABLY_SPEECH:
+                    self.__write_line(segment['text'], first_segment)
+                else:
+                    self.__write_line("", first_segment)
+                first_segment = False
         else:
-            self.__write_line("Receiving Initial Audio")
+            self.__write_line("Receiving Initial Audio", True)
 
     def run(self) -> None:
         """Starts ffmpeg and listens for new files from it"""
@@ -130,7 +155,7 @@ class Subtitles(threading.Thread):
                           "-hide_banner",
                           "-loglevel", FFMPEG_LOG_LEVEL]
         if self.__stream_properties.ffmpeg_realtime:
-            cmd.append("-re")
+            cmd.append(   "-re")
         cmd.extend([      "-i", str(self.__stream_properties.source),
                           "-f", FFMPEG_DATA_STRING,
                           "-ar", str(WHISPER_SAMPLE_RATE),
@@ -187,11 +212,16 @@ def main() -> None:
                     default=DEFAULT_NUM_CHUNKS,
                     help=NumChunksAnnotation.__metadata__[0]) # pylint: disable=no-member # type: ignore
     parser.add_argument(
+                    '-t', '--num_lines',
+                    type=int,
+                    default=DEFAULT_NUM_LINES,
+                    help=NumLinesAnnotation.__metadata__[0]) # pylint: disable=no-member # type: ignore
+    parser.add_argument(
                     '-r', '--realtime',
                     help=RealtimeAnnotation.__metadata__[0], # pylint: disable=no-member # type: ignore
                     action='store_true')
     parser.add_argument(
-                    '-c', '--dontclear',
+                    '-c', '--dont_clear',
                     help=DontclearAnnotation.__metadata__[0], # pylint: disable=no-member # type: ignore
                     action='store_true')
 
@@ -205,7 +235,8 @@ def main() -> None:
             num_chunks=args.num_chunks,
             source=args.source,
             ffmpeg_realtime=args.realtime,
-            dont_clear=args.dontclear
+            dont_clear=args.dont_clear,
+            num_lines=args.num_lines
         )
         subtitles: Subtitles = Subtitles(stream_properties)
         try:
