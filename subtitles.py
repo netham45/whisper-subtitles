@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 """This class transcribes a live ffmpeg stream as subtitles"""
 import argparse
-import subprocess
 import threading
+from subprocess import Popen, PIPE
 from enum import Enum
 from typing import Annotated, List, Union
 
@@ -51,7 +51,7 @@ FFMPEG_DATA_TYPE: type = np.int16
 FFMPEG_DATA_STRING: str = "s16le"
 FFMPEG_CHANNELS: int = 1
 FFMPEG_LOG_LEVEL: str = "fatal"
-FFMPEG_OUTPUT: str = "-"
+FFMPEG_OUTPUT: str = "pipe:"
 
 class SubtitleStreamProperties(BaseModel):
     """Subtitle Stream Properties"""
@@ -68,7 +68,7 @@ class Subtitles(threading.Thread):
     __chunks: List[np.ndarray] = []
     __stream_properties: SubtitleStreamProperties
     __chunk_bytes: int
-    __process: subprocess.Popen
+    __process: Popen
 
     def __init__(self,
                  stream_properties: SubtitleStreamProperties) -> None:
@@ -111,11 +111,7 @@ class Subtitles(threading.Thread):
                           "-ar", str(WHISPER_SAMPLE_RATE),
                           "-ac", str(FFMPEG_CHANNELS),
                           FFMPEG_OUTPUT]
-        with subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                bufsize=self.__chunk_bytes,
-            ) as self.__process:
+        with Popen(cmd, stdout=PIPE, bufsize=self.__chunk_bytes) as self.__process:
             if self.__process.stdout is None:
                 raise RuntimeError("stdout is none")
             while self.__running:
