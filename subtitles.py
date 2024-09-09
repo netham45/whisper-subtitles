@@ -10,13 +10,6 @@ import numpy as np
 import whisper
 from pydantic import AnyUrl, BaseModel, Field, FilePath, ValidationError
 
-CLEAR: str = "\033[2J\033[H"  # ANSI clear code
-WHISPER_SAMPLE_RATE: int = 16000
-FFMPEG_DATA_TYPE: type = np.int16
-FFMPEG_DATA_STRING: str = "s16le"
-FFMPEG_CHANNELS: int = 1
-FFMPEG_LOG_LEVEL: str = "fatal"
-
 class WhisperDevice(str, Enum):
     """Available Whisper Devices"""
     CUDA = 'cuda'
@@ -37,11 +30,6 @@ class WhisperModel(str, Enum):
     SMALL_EN = 'small.en'
     MEDIUM_EN = 'medium.en'
 
-DEFAULT_MODEL: WhisperModel = WhisperModel.BASE_EN
-DEFAULT_DEVICE: WhisperDevice = WhisperDevice.CUDA
-DEFAULT_NUM_CHUNKS: int = 2
-DEFAULT_CHUNK_LENGTH: int = 3
-
 WhisperDeviceAnnotation = Annotated[WhisperDevice, "Compute device type."]
 WhisperModelAnnotation = Annotated[WhisperModel, "Whisper model to run."]
 ChunkLengthAnnotation = Annotated[int,
@@ -51,6 +39,19 @@ NumChunksAnnotation = Annotated[int,
             "Number of chunk segments to be transcribed at once.",
             Field(strict=True, ge=0, le=10)]
 URLFileAnnotation = Annotated[Union[AnyUrl, FilePath] , "URL or File to be streamed."]
+
+DEFAULT_MODEL: WhisperModel = WhisperModel.BASE_EN
+DEFAULT_DEVICE: WhisperDevice = WhisperDevice.CUDA
+DEFAULT_NUM_CHUNKS: int = 2
+DEFAULT_CHUNK_LENGTH: int = 3
+
+CLEAR: str = "\033[2J\033[H"  # ANSI clear code
+WHISPER_SAMPLE_RATE: int = 16000
+FFMPEG_DATA_TYPE: type = np.int16
+FFMPEG_DATA_STRING: str = "s16le"
+FFMPEG_CHANNELS: int = 1
+FFMPEG_LOG_LEVEL: str = "fatal"
+FFMPEG_OUTPUT: str = "-"
 
 class SubtitleStreamProperties(BaseModel):
     """Subtitle Stream Properties"""
@@ -67,7 +68,7 @@ class Subtitles(threading.Thread):
     __chunks: List[np.ndarray] = []
     __stream_properties: SubtitleStreamProperties
     __chunk_bytes: int
-    __process = None
+    __process: subprocess.Popen
 
     def __init__(self,
                  stream_properties: SubtitleStreamProperties) -> None:
@@ -109,7 +110,7 @@ class Subtitles(threading.Thread):
                           "-f", FFMPEG_DATA_STRING,
                           "-ar", str(WHISPER_SAMPLE_RATE),
                           "-ac", str(FFMPEG_CHANNELS),
-                          "pipe:"]
+                          FFMPEG_OUTPUT]
         with subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
