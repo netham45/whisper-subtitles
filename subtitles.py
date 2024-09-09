@@ -2,7 +2,6 @@
 """This class transcribes a live ffmpeg stream as subtitles"""
 import argparse
 import subprocess
-import tempfile
 import threading
 from enum import Enum
 from typing import Annotated, List, Union
@@ -67,7 +66,6 @@ class Subtitles(threading.Thread):
     __running: bool = True
     __chunks: List[np.ndarray] = []
     __stream_properties: SubtitleStreamProperties
-    __temp_dir: str
     __chunk_bytes: int
     __process = None
 
@@ -75,14 +73,12 @@ class Subtitles(threading.Thread):
                  stream_properties: SubtitleStreamProperties) -> None:
         super().__init__()
         self.__stream_properties = stream_properties
-        self.__temp_dir = tempfile.mkdtemp(prefix="subtitles_")
         self.__stream_properties.num_chunks = int(self.__stream_properties.num_chunks)
         self.__chunk_bytes = (self.__stream_properties.chunk_duration *
                               WHISPER_SAMPLE_RATE *
                               np.dtype(FFMPEG_DATA_TYPE).itemsize)
         print(f"Model '{self.__stream_properties.whisper_model}'")
         print(f"Device: '{self.__stream_properties.device_type}'")
-        print(f"Temp Dir Path: '{self.__temp_dir}'")
         print(f"Chunk Duration: {self.__stream_properties.chunk_duration} seconds")
         print(f"Number of Chunks: {self.__stream_properties.num_chunks}")
         print(f"Source {self.__stream_properties.source}")
