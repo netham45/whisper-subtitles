@@ -49,7 +49,7 @@ URLFileAnnotation = Annotated[Union[AnyUrl, FilePath],
 RealtimeAnnotation = Annotated[bool,
             "Process in real-time or as fast as possible. Use for files, not realtime streams."]
 DontclearAnnotation = Annotated[bool,
-            "Clear the screen between transcribed lines."]
+            "Don't clear the screen between transcribed lines."]
 
 class SubtitleStreamProperties(BaseModel):
     """Subtitle Stream Properties"""
