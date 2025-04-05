@@ -1,2 +1,4 @@
 faster-whisper
 numpy
+pydantic
+websockets

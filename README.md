@@ -7,8 +7,10 @@ This script uses Whisper to transcribe an audio stream in real-time, providing s
 - Whisper
 - ffmpeg
 - numpy
+- pydantic
+- websockets (for WebSocket server mode)
 
-## Usage
+## Usage - CLI Mode
 
 ```bash
 python subtitles.py [-h] 
@@ -46,3 +48,67 @@ For more information on available options, use:
 ```bash
 python subtitles.py -h
 ```
+
+## Usage - WebSocket Server Mode
+
+The WebSocket server mode allows you to run a server that provides real-time transcription over WebSockets. When clients connect to a specific endpoint, the server starts transcribing the audio stream from the corresponding IP address and broadcasts the transcription to all connected clients.
+
+```bash
+python ws_server.py
+```
+
+### WebSocket Endpoints:
+
+The WebSocket server provides endpoints in the following format:
+
+```
+ws://server-address:8080/transcribe/<ip>/
+```
+
+Where `<ip>` is the IP address of the stream to be transcribed. The server will fetch the audio stream from:
+
+```
+https://screamrouter.netham45.org/stream/<ip>/
+```
+
+### Example:
+
+To transcribe a stream from IP address 192.168.1.100:
+
+```
+ws://localhost:8080/transcribe/192.168.1.100/
+```
+
+When a client connects to this endpoint, the server will:
+1. Start transcribing the audio stream from https://screamrouter.netham45.org/stream/192.168.1.100/
+2. Send transcription updates to all connected clients
+3. Automatically stop transcription when all clients disconnect
+
+### JavaScript Client Example:
+
+```javascript
+const socket = new WebSocket('ws://localhost:8080/transcribe/192.168.1.100/');
+
+socket.onopen = function(e) {
+  console.log('Connection established');
+};
+
+socket.onmessage = function(event) {
+  console.log('Transcription received:', event.data);
+  document.getElementById('subtitles').innerText = event.data;
+};
+
+socket.onclose = function(event) {
+  if (event.wasClean) {
+    console.log(`Connection closed cleanly, code=${event.code} reason=${event.reason}`);
+  } else {
+    console.log('Connection died');
+  }
+};
+
+socket.onerror = function(error) {
+  console.log(`WebSocket error: ${error.message}`);
+};
+```
+
+This client will connect to the WebSocket server, receive real-time transcriptions, and display them in an HTML element with the ID 'subtitles'.

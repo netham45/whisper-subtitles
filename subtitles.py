@@ -1,10 +1,11 @@
 #!/usr/bin/python3
 """This class transcribes a live ffmpeg stream as subtitles"""
 import argparse
+import re
 import threading
 from subprocess import Popen, PIPE
 from enum import Enum
-from typing import Annotated, List, Optional, Union, Deque
+from typing import Annotated, List, Optional, Union, Deque, Tuple
 import concurrent.futures
 from collections import deque
 
@@ -40,17 +41,13 @@ WhisperDeviceAnnotation = Annotated[WhisperDevice,
 WhisperModelAnnotation = Annotated[WhisperModel,
             "Whisper model to run."]
 ChunkLengthAnnotation = Annotated[float,
-            "Chunk length in seconds for audio to be segmented into.",
-            Field(strict=True, ge=0, le=100)]
+            "Chunk length in seconds for audio to be segmented into."]
 NumChunksAnnotation = Annotated[int,
-            "Number of chunk segments to be transcribed at once.",
-            Field(strict=True, ge=0, le=100)]
+            "Number of chunk segments to be transcribed at once."]
 NumLinesAnnotation = Annotated[int,
-            "Number of lines to output per subtitle refresh",
-            Field(strict=True, ge=0, le=100)]
+            "Number of lines to output per subtitle refresh"]
 HistorySizeAnnotation = Annotated[int,
-            "Number of previous segments to use as context for continuity",
-            Field(strict=True, ge=0, le=10)]
+            "Number of previous segments to use as context for continuity"]
 URLFileAnnotation = Annotated[Union[AnyUrl, FilePath],
             "URL or File to be streamed."]
 RealtimeAnnotation = Annotated[bool,
@@ -75,7 +72,7 @@ DEFAULT_DEVICE: WhisperDevice = WhisperDevice.CUDA
 DEFAULT_NUM_CHUNKS: int = 15
 DEFAULT_NUM_LINES: int = 5
 DEFAULT_CHUNK_LENGTH: float = .5
-DEFAULT_HISTORY_SIZE: int = 3
+DEFAULT_HISTORY_SIZE: int = 300
 
 CLEAR: str = "\033[2J\033[H"  # ANSI clear code
 WHISPER_SAMPLE_RATE: int = 16000
@@ -93,7 +90,10 @@ class Subtitles(threading.Thread):
     """Reads an ffmpeg stream and does subtitles for it"""
     __model: FasterWhisperModel
     __running: bool = True
-    __chunks: List[np.ndarray] = []
+    __chunks: np.ndarray  # 2D numpy array to store audio chunks
+    __chunk_count: int = 0  # Counter for current number of chunks
+    __max_chunks: int  # Maximum number of chunks to store
+    __chunk_size: int  # Size of each chunk in samples
     __stream_properties: SubtitleStreamProperties
     __chunk_bytes: int
     __process: Popen
@@ -104,9 +104,15 @@ class Subtitles(threading.Thread):
         super().__init__()
         self.__stream_properties = stream_properties
         self.__stream_properties.num_chunks = int(self.__stream_properties.num_chunks)
+        self.__max_chunks = self.__stream_properties.num_chunks
         self.__chunk_bytes = round(self.__stream_properties.chunk_duration *
                               WHISPER_SAMPLE_RATE *
                               np.dtype(FFMPEG_DATA_TYPE).itemsize)
+        self.__chunk_size = self.__chunk_bytes // np.dtype(FFMPEG_DATA_TYPE).itemsize
+        
+        # Initialize the 2D numpy array with zeros
+        self.__chunks = np.zeros((self.__max_chunks, self.__chunk_size), dtype=FFMPEG_DATA_TYPE)
+        
         # Set max length of transcript history based on history_size parameter
         self.__transcript_history = deque(maxlen=self.__stream_properties.history_size)
         
@@ -142,7 +148,12 @@ class Subtitles(threading.Thread):
             return ""
         
         # Join the history with spaces to create a continuous prompt
-        return " ".join(self.__transcript_history)
+        retval: str = ""
+        for idx, _ in enumerate(self.__transcript_history):
+            if idx % self.__stream_properties.num_chunks != 0:
+                continue
+            retval = self.__transcript_history[(len(self.__transcript_history) - idx) - 1] + retval
+        return retval
 
     def transcribe_with_timeout(self, audio: np.ndarray) -> Optional[List]:
         """Transcribe with a timeout"""
@@ -154,54 +165,78 @@ class Subtitles(threading.Thread):
             future: concurrent.futures.Future = executor.submit(
                 self.__model.transcribe,
                 audio,
-                beam_size=5,
+                beam_size=6,
                 language="en",
                 initial_prompt=initial_prompt if initial_prompt else None
             )
             try:
                 # faster-whisper returns a tuple (segments, info)
                 result = future.result(
-                    timeout=self.__stream_properties.chunk_duration * .8)
+                    timeout=self.__stream_properties.chunk_duration * .5)
                 return result[0]  # Return just the segments
             except concurrent.futures.TimeoutError:
                 future.cancel()
                 print("\nTranscription timed out")
                 return None
 
-    def __process_chunk(self, data: np.ndarray) -> None:
-        """Processes a chunk of audio"""
-        self.__chunks.append(data)
-        if len(self.__chunks) >= 3:
-            combined_audio: np.ndarray = (np.concatenate(self.__chunks).astype(np.float32) /
-                                         np.iinfo(FFMPEG_DATA_TYPE).max)
-            segments = self.transcribe_with_timeout(combined_audio)
-            if len(self.__chunks) >= self.__stream_properties.num_chunks:
-                del self.__chunks[0]
-            if segments is None:
-                return
-            
-            # Faster-whisper returns a generator, we convert to list to get the last N items
-            segments_list = list(segments)
-            
-            # Update transcript history with new segments
-            for segment in segments_list:
-                if segment.avg_logprob > -1.0:  # Only add confident segments to history
-                    self.__transcript_history.append(segment.text.strip())
-            
-            first_segment: bool = True
-            
-            # Take the last N segments based on num_lines
-            display_segments = segments_list[-(self.__stream_properties.num_lines - 1):] if segments_list else []
-            output: str = ""
-            for segment in display_segments:
-                # Faster-whisper uses avg_logprob instead of no_speech_prob
-                # Higher avg_logprob is better (more confident)
-                if segment.avg_logprob > -1.0:  # Adjusted threshold, may need tuning
-                    output += f" {segment.text}"
-                truncated_output: str = " ".join(output.split(" ")[-15:])
-                self.__write_line(truncated_output, True)
+    def __process_audio_buffer(self) -> None:
+        """Processes the audio buffer when we have enough chunks"""
+        # Arrange chunks in chronological order for processing
+        # If we've wrapped around the buffer, we need to reorder the chunks
+        if self.__chunk_count > self.__max_chunks:
+            # Calculate starting index (oldest chunk)
+            start_idx = self.__chunk_count % self.__max_chunks
+            # Reorder chunks: [oldest_chunk:end, beginning:oldest_chunk]
+            ordered_chunks = np.vstack((
+                self.__chunks[start_idx:],
+                self.__chunks[:start_idx]
+            ))
         else:
-            self.__write_line("Receiving Initial Audio", True)
+            # We haven't wrapped around yet, so chunks are already in order
+            ordered_chunks = self.__chunks
+        
+        # Convert to float32 and normalize
+        combined_audio = ordered_chunks.flatten().astype(np.float32) / np.iinfo(FFMPEG_DATA_TYPE).max
+        
+        segments = self.transcribe_with_timeout(combined_audio)
+        
+        if segments is None:
+            return
+        
+        # Faster-whisper returns a generator, we convert to list to get the last N items
+        segments_list = list(segments)
+        
+        # Update transcript history with new segments
+        for segment in segments_list:
+            if segment.avg_logprob > -.6:  # Only add confident segments to history
+                self.__transcript_history.append(segment.text.strip())
+        
+        # Take the last N segments based on num_lines
+        display_segments = segments_list[-(self.__stream_properties.num_lines - 1):] if segments_list else []
+        output: str = ""
+        for segment in display_segments:
+            # Faster-whisper uses avg_logprob instead of no_speech_prob
+            # Higher avg_logprob is better (more confident)
+            if segment.avg_logprob > -.6:  # Adjusted threshold, may need tuning
+                output += f" {segment.text}"
+            output = re.sub("  *", " ", output)
+            parts: List[str] = output.split(" ")
+            last: int = 0
+            second_to_last: int = 0
+            third_to_last: int = 0
+            for idx, part in enumerate(parts):
+                if idx == 0 or len(part) == 0:
+                    continue
+                if part[0].isupper():
+                    if idx == 0 or parts[idx-1][-1:] in [".", "!", "?"]:
+                        third_to_last = second_to_last
+                        second_to_last = last
+                        last = idx
+            truncated_output: str = (#(" ".join(parts[third_to_last:second_to_last])).strip() + "\n" +
+                                     (" ".join(parts[second_to_last:last])).strip() + "\n" +
+                                     (" ".join(parts[last:-1])).strip() + "\n" + 
+                                     (" ".join(parts[-1:])).strip())
+            self.__write_line(truncated_output, True)
 
     def run(self) -> None:
         """Starts ffmpeg and listens for new files from it"""
@@ -224,8 +259,33 @@ class Subtitles(threading.Thread):
                 if len(data) == 0:
                     self.__running = False
                     break
-                np_data: np.ndarray = np.frombuffer(data, FFMPEG_DATA_TYPE)
-                self.__process_chunk(np_data)
+                
+                # Calculate the current chunk index in our circular buffer
+                chunk_idx = self.__chunk_count % self.__max_chunks
+                
+                # Calculate samples in this chunk
+                samples = len(data) // np.dtype(FFMPEG_DATA_TYPE).itemsize
+                
+                # Direct read into the 2D array at the current position
+                # Create a view of the buffer as 1D array of bytes
+                chunk_bytes_view = self.__chunks[chunk_idx, :samples].view(np.uint8)
+                
+                # Reshape to match the incoming bytes
+                bytes_per_sample = np.dtype(FFMPEG_DATA_TYPE).itemsize
+                chunk_bytes_view = chunk_bytes_view.reshape(samples * bytes_per_sample)
+                
+                # Copy the bytes directly into the buffer
+                chunk_bytes_view[:len(data)] = np.frombuffer(data, np.uint8)
+                
+                # Increment chunk counter
+                self.__chunk_count += 1
+                
+                # Process the buffer if we have enough chunks
+                if self.__chunk_count >= self.__max_chunks:
+                    self.__process_audio_buffer()
+                else:
+                    self.__write_line(f"Receiving Initial Audio {self.__chunk_count} / {self.__stream_properties.num_chunks}", True)
+            
             self.__process.wait()
 
     def stop(self) -> None:
